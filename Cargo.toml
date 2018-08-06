@@ -19,6 +19,15 @@ default = ["std"]
 name = "smallvec"
 path = "lib.rs"
 
+[[bench]]
+name = "bench"
+path = "benches/bench.rs"
+
+[[bench]]
+name = "serde"
+path = "benches/serde.rs"
+required-features = ["serde"]
+
 [dependencies]
 unreachable = "1.0.0"
 serde = { version = "1", optional = true }

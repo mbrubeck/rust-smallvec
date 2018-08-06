@@ -1062,13 +1062,26 @@ where A::Item: Deserialize<'de>,
         where
             B: SeqAccess<'de>,
     {
-        let len = seq.size_hint().unwrap_or(0);
-        let mut values = SmallVec::with_capacity(len);
-
-        while let Some(value) = seq.next_element()? {
-            values.push(value);
+        let mut values = SmallVec::<A>::new();
+        if let Some(len) = seq.size_hint() {
+            values.reserve_exact(len);
+            let ptr = values.as_mut_ptr();
+            let mut count = 0;
+            unsafe {
+                while count < len {
+                    if let Some(item) = seq.next_element()? {
+                        ptr::write(ptr.offset(count as isize), item);
+                        count += 1;
+                    } else {
+                        break;
+                    }
+                }
+                values.set_len(count);
+            }
         }
-
+        while let Some(item) = seq.next_element()? {
+            values.push(item);
+        }
         Ok(values)
     }
 }
