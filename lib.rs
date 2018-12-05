@@ -30,6 +30,8 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(feature = "union", feature(untagged_unions))]
+#![cfg_attr(feature = "likely", feature(stmt_expr_attributes))]
+#![cfg_attr(any(feature = "likely", feature = "push_light"), feature(core_intrinsics))]
 #![cfg_attr(feature = "specialization", feature(specialization))]
 #![cfg_attr(feature = "may_dangle", feature(dropck_eyepatch))]
 #![deny(missing_docs)]
@@ -139,7 +141,27 @@ macro_rules! debug_unreachable {
         } else {
             panic!($e);
         }
-    };
+    }
+}
+
+#[cfg(not(feature = "likely"))]
+macro_rules! likely {
+    ($e:expr) => { $e }
+}
+
+#[cfg(feature = "likely")]
+macro_rules! likely {
+    ($e:expr) => { #[allow(unused_unsafe)] unsafe { core::intrinsics::likely($e) } }
+}
+
+#[cfg(not(feature = "likely"))]
+macro_rules! unlikely {
+    ($e:expr) => { $e }
+}
+
+#[cfg(feature = "likely")]
+macro_rules! unlikely {
+    ($e:expr) => { #[allow(unused_unsafe)] unsafe { core::intrinsics::unlikely($e) } }
 }
 
 /// Trait to be implemented by a collection that can be extended from a slice
@@ -640,12 +662,67 @@ impl<A: Array> SmallVec<A> {
     pub fn push(&mut self, value: A::Item) {
         unsafe {
             let (_, &mut len, cap) = self.triple_mut();
-            if len == cap {
+            if unlikely!(len == cap) {
                 self.reserve(1);
             }
             let (ptr, len_ptr, _) = self.triple_mut();
             *len_ptr = len + 1;
             ptr::write(ptr.offset(len as isize), value);
+        }
+    }
+
+    /// Append an item to the vector. This is always inlined with a fast
+    /// path for when the vector doesn't need an heap allocation.
+    #[cfg(feature = "push_light")]
+    #[inline(always)]
+    pub fn push_light(&mut self, value: A::Item) {
+        unsafe {
+            if likely!(self.capacity < A::size()) {
+                let ptr = self.data.inline_mut();
+                ptr::write(ptr.offset(self.capacity as isize), value);
+                self.capacity = self.capacity + 1;
+            } else {
+                self.push_light_cold(self.capacity, value);
+            }
+        }
+    }
+
+    // Slow path
+    #[cfg(feature = "push_light")]
+    #[inline(never)]
+    #[cold]
+    unsafe fn push_light_cold(&mut self, cap: usize, value: A::Item) {
+        core::intrinsics::assume(self.capacity == cap);
+        if likely!(cap != A::size()) {
+            debug_assert!(self.spilled());
+            let (ptr, len_ptr) = self.data.heap_mut();
+
+            let len = *len_ptr;
+
+            if unlikely!(cap - len < 1) {
+                core::intrinsics::assume(self.capacity >= A::size());
+                if unlikely!(cap > (isize::max_value() >> 1) as usize) {
+                    panic!("size overflow")
+                }
+                let new_cap = cap << 1;
+                self.grow(new_cap);
+                let (ptr, len_ptr) = self.data.heap_mut();
+                *len_ptr = len + 1;
+                ptr::write(ptr.offset(len as isize), value);
+            } else {
+                *len_ptr = len + 1;
+                ptr::write(ptr.offset(len as isize), value);
+            }
+        } else {
+            debug_assert!(self.len() == A::size());
+            let new_cap = A::size().checked_add(1).
+                and_then(usize::checked_next_power_of_two).
+                unwrap_or(usize::max_value());
+            self.grow(new_cap);
+            debug_assert!(self.spilled());
+            let (ptr, len_ptr) = self.data.heap_mut();
+            *len_ptr = A::size() + 1;
+            ptr::write(ptr.offset(A::size() as isize), value);
         }
     }
 
