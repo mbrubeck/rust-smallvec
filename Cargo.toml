@@ -17,7 +17,6 @@ default = ["std"]
 specialization = []
 may_dangle = []
 likely = []
-push_light = []
 
 [lib]
 name = "smallvec"
