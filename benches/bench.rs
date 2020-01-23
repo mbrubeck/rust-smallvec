@@ -5,12 +5,14 @@ extern crate smallvec;
 extern crate test;
 
 use self::test::Bencher;
-use smallvec::{ExtendFromSlice, SmallVec};
+use smallvec::SmallVec;
+use std::iter::FromIterator;
+use tinyvec::{TinyVec, tiny_vec};
 
 const VEC_SIZE: usize = 16;
 const SPILLED_SIZE: usize = 100;
 
-trait Vector<T>: for<'a> From<&'a [T]> + Extend<T> + ExtendFromSlice<T> {
+trait Vector<T>: Extend<T> {
     fn new() -> Self;
     fn push(&mut self, val: T);
     fn pop(&mut self) -> Option<T>;
@@ -18,6 +20,7 @@ trait Vector<T>: for<'a> From<&'a [T]> + Extend<T> + ExtendFromSlice<T> {
     fn insert(&mut self, n: usize, val: T);
     fn from_elem(val: T, n: usize) -> Self;
     fn from_elems(val: &[T]) -> Self;
+    fn extend_from_slice(&mut self, other: &[T]);
 }
 
 impl<T: Copy> Vector<T> for Vec<T> {
@@ -48,6 +51,10 @@ impl<T: Copy> Vector<T> for Vec<T> {
     fn from_elems(val: &[T]) -> Self {
         val.to_owned()
     }
+
+    fn extend_from_slice(&mut self, other: &[T]) {
+        self.extend_from_slice(other)
+    }
 }
 
 impl<T: Copy> Vector<T> for SmallVec<[T; VEC_SIZE]> {
@@ -77,6 +84,47 @@ impl<T: Copy> Vector<T> for SmallVec<[T; VEC_SIZE]> {
 
     fn from_elems(val: &[T]) -> Self {
         SmallVec::from_slice(val)
+    }
+
+    fn extend_from_slice(&mut self, other: &[T]) {
+        self.extend_from_slice(other)
+    }
+}
+
+impl<T: Copy + Default> Vector<T> for TinyVec<[T; VEC_SIZE]> {
+    fn new() -> Self {
+        Self::new()
+    }
+
+    fn push(&mut self, val: T) {
+        self.push(val)
+    }
+
+    fn pop(&mut self) -> Option<T> {
+        self.pop()
+    }
+
+    fn remove(&mut self, p: usize) -> T {
+        self.remove(p)
+    }
+
+    fn insert(&mut self, n: usize, val: T) {
+        self.insert(n, val)
+    }
+
+    fn from_elem(val: T, n: usize) -> Self {
+        let v = vec![val; n];
+        Self::from_elems(&v)
+    }
+
+    fn from_elems(val: &[T]) -> Self {
+        let mut v = Self::new();
+        v.extend_from_slice(val);
+        v
+    }
+
+    fn extend_from_slice(&mut self, other: &[T]) {
+        self.extend_from_slice(other)
     }
 }
 
@@ -132,6 +180,28 @@ make_benches! {
         bench_macro_from_elem_vec => gen_from_elem(SPILLED_SIZE as _),
         bench_macro_from_elem_vec_small => gen_from_elem(VEC_SIZE as _),
         bench_pushpop_vec => gen_pushpop(),
+    }
+}
+
+make_benches! {
+    TinyVec<[u64; VEC_SIZE]> {
+        bench_push_tiny => gen_push(SPILLED_SIZE as _),
+        bench_push_tiny_small => gen_push(VEC_SIZE as _),
+        bench_insert_tiny => gen_insert(SPILLED_SIZE as _),
+        bench_insert_tiny_small => gen_insert(VEC_SIZE as _),
+        bench_remove_tiny => gen_remove(SPILLED_SIZE as _),
+        bench_remove_tiny_small => gen_remove(VEC_SIZE as _),
+        bench_extend_tiny => gen_extend(SPILLED_SIZE as _),
+        bench_extend_tiny_small => gen_extend(VEC_SIZE as _),
+        bench_from_iter_tiny => gen_from_iter(SPILLED_SIZE as _),
+        bench_from_iter_tiny_small => gen_from_iter(VEC_SIZE as _),
+        bench_from_slice_tiny => gen_from_slice(SPILLED_SIZE as _),
+        bench_from_slice_tiny_small => gen_from_slice(VEC_SIZE as _),
+        bench_extend_from_slice_tiny => gen_extend_from_slice(SPILLED_SIZE as _),
+        bench_extend_from_slice_tiny_small => gen_extend_from_slice(VEC_SIZE as _),
+        bench_macro_from_elem_tiny => gen_from_elem(SPILLED_SIZE as _),
+        bench_macro_from_elem_tiny_small => gen_from_elem(VEC_SIZE as _),
+        bench_pushpop_tiny => gen_pushpop(),
     }
 }
 
@@ -192,10 +262,9 @@ fn gen_extend<V: Vector<u64>>(n: u64, b: &mut Bencher) {
     });
 }
 
-fn gen_from_iter<V: Vector<u64>>(n: u64, b: &mut Bencher) {
-    let v: Vec<u64> = (0..n).collect();
+fn gen_from_iter<V: Vector<u64> + FromIterator<u64>>(n: u64, b: &mut Bencher) {
     b.iter(|| {
-        let vec = V::from(&v);
+        let vec = V::from_iter(0..n);
         vec
     });
 }
@@ -290,6 +359,18 @@ fn bench_macro_from_list_vec(b: &mut Bencher) {
             0x100, 0x200, 0x400, 0x800, 0x1000, 0x2000, 0x4000, 0x8000, 0x10000, 0x20000, 0x40000,
             0x80000, 0x100000,
         ];
+        vec
+    });
+}
+
+#[bench]
+fn bench_macro_from_list_tiny(b: &mut Bencher) {
+    b.iter(|| {
+        let vec = tiny_vec!([u64; 16],
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 20, 24, 32, 36, 0x40, 0x80,
+            0x100, 0x200, 0x400, 0x800, 0x1000, 0x2000, 0x4000, 0x8000, 0x10000, 0x20000, 0x40000,
+            0x80000, 0x100000
+        );
         vec
     });
 }
