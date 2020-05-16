@@ -327,9 +327,9 @@ impl<'a, T: 'a + Array> Drop for Drain<'a, T> {
 }
 
 #[cfg(feature = "union")]
-union SmallVecData<A: Array> {
+union SmallVecData<A: Array, T=<A as Array>::Item> {
     inline: MaybeUninit<A>,
-    heap: (NonNull<A::Item>, usize),
+    heap: (NonNull<T>, usize),
 }
 
 #[cfg(feature = "union")]
@@ -351,10 +351,6 @@ impl<A: Array> SmallVecData<A> {
         self.inline
     }
     #[inline]
-    unsafe fn heap(&self) -> (*mut A::Item, usize) {
-        (self.heap.0.as_ptr(), self.heap.1)
-    }
-    #[inline]
     unsafe fn heap_mut(&mut self) -> (*mut A::Item, &mut usize) {
         (self.heap.0.as_ptr(), &mut self.heap.1)
     }
@@ -366,10 +362,18 @@ impl<A: Array> SmallVecData<A> {
     }
 }
 
+#[cfg(feature = "union")]
+impl<A: Array, T> SmallVecData<A, T> {
+    #[inline]
+    unsafe fn heap(&self) -> (*mut T, usize) {
+        (self.heap.0.as_ptr() as *mut T, self.heap.1)
+    }
+}
+
 #[cfg(not(feature = "union"))]
-enum SmallVecData<A: Array> {
+enum SmallVecData<A: Array, T=<A as Array>::Item> {
     Inline(MaybeUninit<A>),
-    Heap((NonNull<A::Item>, usize)),
+    Heap((NonNull<T>, usize)),
 }
 
 #[cfg(not(feature = "union"))]
@@ -400,13 +404,6 @@ impl<A: Array> SmallVecData<A> {
         }
     }
     #[inline]
-    unsafe fn heap(&self) -> (*mut A::Item, usize) {
-        match self {
-            SmallVecData::Heap(data) => (data.0.as_ptr(), data.1),
-            _ => debug_unreachable!(),
-        }
-    }
-    #[inline]
     unsafe fn heap_mut(&mut self) -> (*mut A::Item, &mut usize) {
         match self {
             SmallVecData::Heap(data) => (data.0.as_ptr(), &mut data.1),
@@ -416,6 +413,17 @@ impl<A: Array> SmallVecData<A> {
     #[inline]
     fn from_heap(ptr: *mut A::Item, len: usize) -> SmallVecData<A> {
         SmallVecData::Heap((NonNull::new(ptr).unwrap(), len))
+    }
+}
+
+#[cfg(not(feature = "union"))]
+impl<A: Array, T> SmallVecData<A, T> {
+    #[inline]
+    unsafe fn heap(&self) -> (*mut T, usize) {
+        match self {
+            SmallVecData::Heap(data) => (data.0.as_ptr() as *mut T, data.1),
+            _ => debug_unreachable!(),
+        }
     }
 }
 
@@ -448,12 +456,12 @@ unsafe impl<A: Array + Sync> Sync for SmallVecData<A> {}
 /// assert_eq!(v.len(), 5);
 /// assert!(v.spilled());
 /// ```
-pub struct SmallVec<A: Array> {
+pub struct SmallVec<A: Array, Item=<A as Array>::Item> {
     // The capacity field is used to determine which of the storage variants is active:
     // If capacity <= A::size() then the inline variant is used and capacity holds the current length of the vector (number of elements actually in use).
     // If capacity > A::size() then the heap variant is used and capacity holds the size of the memory allocation.
     capacity: usize,
-    data: SmallVecData<A>,
+    data: SmallVecData<A, Item>,
 }
 
 impl<A: Array> SmallVec<A> {
@@ -621,39 +629,6 @@ impl<A: Array> SmallVec<A> {
     #[inline]
     pub fn capacity(&self) -> usize {
         self.triple().2
-    }
-
-    /// Returns a tuple with (data ptr, len, capacity)
-    /// Useful to get all SmallVec properties with a single check of the current storage variant.
-    #[inline]
-    fn triple(&self) -> (*const A::Item, usize, usize) {
-        unsafe {
-            if self.spilled() {
-                let (ptr, len) = self.data.heap();
-                (ptr, len, self.capacity)
-            } else {
-                (self.data.inline(), self.capacity, A::size())
-            }
-        }
-    }
-
-    /// Returns a tuple with (data ptr, len ptr, capacity)
-    #[inline]
-    fn triple_mut(&mut self) -> (*mut A::Item, &mut usize, usize) {
-        unsafe {
-            if self.spilled() {
-                let (ptr, len_ptr) = self.data.heap_mut();
-                (ptr, len_ptr, self.capacity)
-            } else {
-                (self.data.inline_mut(), &mut self.capacity, A::size())
-            }
-        }
-    }
-
-    /// Returns `true` if the data has spilled into a separate heap-allocated buffer.
-    #[inline]
-    pub fn spilled(&self) -> bool {
-        self.capacity > A::size()
     }
 
     /// Creates a draining iterator that removes the specified range in the vector
@@ -1215,6 +1190,41 @@ impl<A: Array> SmallVec<A> {
     }
 }
 
+impl<A: Array, T> SmallVec<A, T> {
+    /// Returns `true` if the data has spilled into a separate heap-allocated buffer.
+    #[inline]
+    pub fn spilled(&self) -> bool {
+        self.capacity > A::size()
+    }
+
+    /// Returns a tuple with (data ptr, len, capacity)
+    /// Useful to get all SmallVec properties with a single check of the current storage variant.
+    #[inline]
+    fn triple(&self) -> (*const A::Item, usize, usize) {
+        unsafe {
+            if self.spilled() {
+                let (ptr, len) = self.data.heap();
+                (ptr, len, self.capacity)
+            } else {
+                (self.data.inline(), self.capacity, A::size())
+            }
+        }
+    }
+
+    /// Returns a tuple with (data ptr, len ptr, capacity)
+    #[inline]
+    fn triple_mut(&mut self) -> (*mut A::Item, &mut usize, usize) {
+        unsafe {
+            if self.spilled() {
+                let (ptr, len_ptr) = self.data.heap_mut();
+                (ptr, len_ptr, self.capacity)
+            } else {
+                (self.data.inline_mut(), &mut self.capacity, A::size())
+            }
+        }
+    }
+}
+
 impl<A: Array> SmallVec<A>
 where
     A::Item: Copy,
@@ -1323,7 +1333,7 @@ where
     }
 }
 
-impl<A: Array> ops::Deref for SmallVec<A> {
+impl<A: Array, T> ops::Deref for SmallVec<A, T> {
     type Target = [A::Item];
     #[inline]
     fn deref(&self) -> &[A::Item] {
@@ -1334,7 +1344,7 @@ impl<A: Array> ops::Deref for SmallVec<A> {
     }
 }
 
-impl<A: Array> ops::DerefMut for SmallVec<A> {
+impl<A: Array, T> ops::DerefMut for SmallVec<A, T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut [A::Item] {
         unsafe {
@@ -1499,7 +1509,7 @@ impl<A: Array> From<A> for SmallVec<A> {
     }
 }
 
-impl<A: Array, I: SliceIndex<[A::Item]>> ops::Index<I> for SmallVec<A> {
+impl<A: Array, T, I: SliceIndex<[A::Item]>> ops::Index<I> for SmallVec<A, T> {
     type Output = I::Output;
 
     fn index(&self, index: I) -> &I::Output {
@@ -1507,7 +1517,7 @@ impl<A: Array, I: SliceIndex<[A::Item]>> ops::Index<I> for SmallVec<A> {
     }
 }
 
-impl<A: Array, I: SliceIndex<[A::Item]>> ops::IndexMut<I> for SmallVec<A> {
+impl<A: Array, T, I: SliceIndex<[A::Item]>> ops::IndexMut<I> for SmallVec<A, T> {
     fn index_mut(&mut self, index: I) -> &mut I::Output {
         &mut (&mut **self)[index]
     }
@@ -1574,7 +1584,7 @@ impl<A: Array> Default for SmallVec<A> {
 }
 
 #[cfg(feature = "may_dangle")]
-unsafe impl<#[may_dangle] A: Array> Drop for SmallVec<A> {
+unsafe impl<#[may_dangle] A: Array, I> Drop for SmallVec<A, I> {
     fn drop(&mut self) {
         unsafe {
             if self.spilled() {
@@ -1588,7 +1598,7 @@ unsafe impl<#[may_dangle] A: Array> Drop for SmallVec<A> {
 }
 
 #[cfg(not(feature = "may_dangle"))]
-impl<A: Array> Drop for SmallVec<A> {
+impl<A: Array, I> Drop for SmallVec<A, I> {
     fn drop(&mut self) {
         unsafe {
             if self.spilled() {
@@ -2709,5 +2719,17 @@ mod tests {
     #[test]
     fn const_generics() {
         let _v = SmallVec::<[i32; 987]>::default();
+    }
+
+    #[test]
+    fn covariant() {
+        fn f<'a>(_: SmallVec<[&'a u8; 1]>, _: SmallVec<[&'a u8; 1]>) {}
+
+        let b = 0;
+
+        let v1: SmallVec<[&'static u8; 1]> = SmallVec::new();
+        let v2: SmallVec<[&u8; 1]> = smallvec![&b];
+
+        f(v1, v2);
     }
 }
